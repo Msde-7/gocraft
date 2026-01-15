@@ -150,7 +150,7 @@ func (c *Chunk) BuildMesh(getNeighborBlock func(x, y, z int) BlockType) {
 	var indexOffset uint32 = 0
 
 	for x := 0; x < ChunkSize; x++ {
-		for y := 0; y < 100; y++ { // Limit height for speed
+		for y := 0; y < 128; y++ { // Up to 128 height
 			for z := 0; z < ChunkSize; z++ {
 				block := c.Blocks[x][y][z]
 				if block == BlockAir {
@@ -159,10 +159,10 @@ func (c *Chunk) BuildMesh(getNeighborBlock func(x, y, z int) BlockType) {
 
 				blockInfo := BlockInfos[block]
 
-				// Check each face - inline for speed
+				// Check each face - local only to avoid deadlock
 				for face := 0; face < 6; face++ {
-					// Get neighbor block
-					var neighbor BlockType
+					var neighbor BlockType = BlockAir
+
 					switch face {
 					case 0: // Top
 						if y+1 < ChunkHeight {
@@ -172,25 +172,25 @@ func (c *Chunk) BuildMesh(getNeighborBlock func(x, y, z int) BlockType) {
 						if y > 0 {
 							neighbor = c.Blocks[x][y-1][z]
 						}
-					case 2: // North
+					case 2: // North (Z-)
 						if z > 0 {
 							neighbor = c.Blocks[x][y][z-1]
 						}
-					case 3: // South
+					case 3: // South (Z+)
 						if z < ChunkSize-1 {
 							neighbor = c.Blocks[x][y][z+1]
 						}
-					case 4: // East
+					case 4: // East (X+)
 						if x < ChunkSize-1 {
 							neighbor = c.Blocks[x+1][y][z]
 						}
-					case 5: // West
+					case 5: // West (X-)
 						if x > 0 {
 							neighbor = c.Blocks[x-1][y][z]
 						}
 					}
 
-					// Skip if neighbor is solid
+					// Skip if neighbor is solid and opaque
 					if neighbor.IsSolid() && !neighbor.IsTransparent() {
 						continue
 					}

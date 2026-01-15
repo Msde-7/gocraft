@@ -95,8 +95,9 @@ func NewGame(width, height int, seed int64) (*Game, error) {
 
 	// Configure OpenGL
 	gl.Enable(gl.DEPTH_TEST)
-	gl.Enable(gl.CULL_FACE)
-	gl.CullFace(gl.BACK)
+	gl.DepthFunc(gl.LEQUAL)
+	// Disable face culling for now to fix rendering issues
+	gl.Disable(gl.CULL_FACE)
 	gl.Enable(gl.BLEND)
 	gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
 	gl.Enable(gl.MULTISAMPLE)

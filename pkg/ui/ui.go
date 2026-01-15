@@ -104,8 +104,6 @@ func (ui *UI) RenderHotbar(inventory [9]world.BlockType, selectedSlot int, block
 			ui.drawTexturedRect(x+4, startY+4, slotSize-8, slotSize-8, texIndex)
 		}
 
-		// Draw slot number
-		// (In a full implementation, we'd render text here)
 	}
 }
 

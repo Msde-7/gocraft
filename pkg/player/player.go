@@ -123,8 +123,8 @@ func (p *Player) GetProjectionMatrix(aspectRatio float32) mgl32.Mat4 {
 
 // Update updates the player state
 func (p *Player) Update(dt float32, w *world.World, input *Input) {
-	// Handle rotation
-	p.Rotation[0] += input.MouseDeltaX * input.Sensitivity
+	// Handle rotation - subtract X for correct direction
+	p.Rotation[0] -= input.MouseDeltaX * input.Sensitivity
 	p.Rotation[1] += input.MouseDeltaY * input.Sensitivity
 
 	// Clamp pitch
@@ -354,7 +354,7 @@ type Input struct {
 // NewInput creates a new input state
 func NewInput() *Input {
 	return &Input{
-		Sensitivity: 0.3, // Faster camera
+		Sensitivity: 0.15, // Good camera speed
 	}
 }
 
