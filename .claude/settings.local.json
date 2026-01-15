@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod tidy:*)",
+      "Bash(go build:*)",
+      "Bash(where:*)",
+      "Bash(export PATH=\"/c/msys64/ucrt64/bin:$PATH\")",
+      "Bash(go env:*)",
+      "Bash(export CC=gcc)",
+      "Bash(tasklist:*)",
+      "Bash(taskkill:*)",
+      "Bash(timeout:*)"
+    ]
+  }
+}
