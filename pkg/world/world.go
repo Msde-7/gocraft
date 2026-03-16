@@ -217,28 +217,154 @@ func (w *World) Render(frustum utils.Frustum) int {
 	return rendered
 }
 
-// Raycast performs a simple raycast in the world
+// Raycast performs a DDA (Digital Differential Analyzer) raycast in the world
 func (w *World) Raycast(origin, direction mgl32.Vec3, maxDist float32) utils.RaycastResult {
 	result := utils.RaycastResult{}
 
-	// Simple step-based raycasting
-	step := float32(0.1)
+	// Current voxel position
+	x := int(math.Floor(float64(origin[0])))
+	y := int(math.Floor(float64(origin[1])))
+	z := int(math.Floor(float64(origin[2])))
 
-	for d := float32(0); d < maxDist; d += step {
-		pos := origin.Add(direction.Mul(d))
+	// Direction signs
+	stepX, stepY, stepZ := 1, 1, 1
+	if direction[0] < 0 {
+		stepX = -1
+	}
+	if direction[1] < 0 {
+		stepY = -1
+	}
+	if direction[2] < 0 {
+		stepZ = -1
+	}
 
-		x := int(math.Floor(float64(pos[0])))
-		y := int(math.Floor(float64(pos[1])))
-		z := int(math.Floor(float64(pos[2])))
+	// Distance along ray to next voxel boundary for each axis
+	var tMaxX, tMaxY, tMaxZ float64
+	var tDeltaX, tDeltaY, tDeltaZ float64
+
+	if direction[0] != 0 {
+		tDeltaX = math.Abs(1.0 / float64(direction[0]))
+		if stepX > 0 {
+			tMaxX = (float64(x+1) - float64(origin[0])) / float64(direction[0])
+		} else {
+			tMaxX = (float64(x) - float64(origin[0])) / float64(direction[0])
+		}
+	} else {
+		tMaxX = math.MaxFloat64
+		tDeltaX = math.MaxFloat64
+	}
+
+	if direction[1] != 0 {
+		tDeltaY = math.Abs(1.0 / float64(direction[1]))
+		if stepY > 0 {
+			tMaxY = (float64(y+1) - float64(origin[1])) / float64(direction[1])
+		} else {
+			tMaxY = (float64(y) - float64(origin[1])) / float64(direction[1])
+		}
+	} else {
+		tMaxY = math.MaxFloat64
+		tDeltaY = math.MaxFloat64
+	}
+
+	if direction[2] != 0 {
+		tDeltaZ = math.Abs(1.0 / float64(direction[2]))
+		if stepZ > 0 {
+			tMaxZ = (float64(z+1) - float64(origin[2])) / float64(direction[2])
+		} else {
+			tMaxZ = (float64(z) - float64(origin[2])) / float64(direction[2])
+		}
+	} else {
+		tMaxZ = math.MaxFloat64
+		tDeltaZ = math.MaxFloat64
+	}
+
+	// Check starting block
+	block := w.GetBlock(x, y, z)
+	if block != BlockAir && block.IsSolid() {
+		result.Hit = true
+		result.BlockPos = utils.Vec3i{X: x, Y: y, Z: z}
+		result.Distance = 0
+		result.Position = origin
+		result.Face = 0
+		result.Normal = mgl32.Vec3{0, 1, 0}
+		return result
+	}
+
+	// Face entered when stepping along each axis
+	// When stepping +X, we enter from West (X-) face; -X enters from East (X+)
+	// When stepping +Y, we enter from Bottom (Y-) face; -Y enters from Top (Y+)
+	// When stepping +Z, we enter from North (Z-) face; -Z enters from South (Z+)
+	face := 0
+
+	dist := 0.0
+	maxDistF := float64(maxDist)
+
+	for dist < maxDistF {
+		// Step to next voxel boundary
+		if tMaxX < tMaxY {
+			if tMaxX < tMaxZ {
+				x += stepX
+				dist = tMaxX
+				tMaxX += tDeltaX
+				if stepX > 0 {
+					face = 5 // West face (X-)
+				} else {
+					face = 4 // East face (X+)
+				}
+			} else {
+				z += stepZ
+				dist = tMaxZ
+				tMaxZ += tDeltaZ
+				if stepZ > 0 {
+					face = 2 // North face (Z-)
+				} else {
+					face = 3 // South face (Z+)
+				}
+			}
+		} else {
+			if tMaxY < tMaxZ {
+				y += stepY
+				dist = tMaxY
+				tMaxY += tDeltaY
+				if stepY > 0 {
+					face = 1 // Bottom face (Y-)
+				} else {
+					face = 0 // Top face (Y+)
+				}
+			} else {
+				z += stepZ
+				dist = tMaxZ
+				tMaxZ += tDeltaZ
+				if stepZ > 0 {
+					face = 2 // North face (Z-)
+				} else {
+					face = 3 // South face (Z+)
+				}
+			}
+		}
+
+		if dist > maxDistF {
+			break
+		}
 
 		block := w.GetBlock(x, y, z)
 		if block != BlockAir && block.IsSolid() {
+			pos := origin.Add(direction.Mul(float32(dist)))
 			result.Hit = true
 			result.BlockPos = utils.Vec3i{X: x, Y: y, Z: z}
-			result.Distance = d
+			result.Distance = float32(dist)
 			result.Position = pos
-			result.Face = 0
-			result.Normal = mgl32.Vec3{0, 1, 0}
+			result.Face = face
+			// Set normal from face
+			faceNormals := [6]mgl32.Vec3{
+				{0, 1, 0},  // Top
+				{0, -1, 0}, // Bottom
+				{0, 0, -1}, // North
+				{0, 0, 1},  // South
+				{1, 0, 0},  // East
+				{-1, 0, 0}, // West
+			}
+			result.Normal = faceNormals[face]
 			return result
 		}
 	}

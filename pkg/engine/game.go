@@ -35,6 +35,7 @@ type Game struct {
 	blockShader   *render.Shader
 	blockAtlas    *render.Texture
 	sky           *render.Sky
+	clouds        *render.Clouds
 	wireframe     *render.WireframeRenderer
 	ui            *ui.UI
 
@@ -96,8 +97,9 @@ func NewGame(width, height int, seed int64) (*Game, error) {
 	// Configure OpenGL
 	gl.Enable(gl.DEPTH_TEST)
 	gl.DepthFunc(gl.LEQUAL)
-	// Disable face culling for now to fix rendering issues
-	gl.Disable(gl.CULL_FACE)
+	gl.Enable(gl.CULL_FACE)
+	gl.CullFace(gl.BACK)
+	gl.FrontFace(gl.CW) // Our mesh winding is clockwise
 	gl.Enable(gl.BLEND)
 	gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
 	gl.Enable(gl.MULTISAMPLE)
@@ -161,6 +163,12 @@ func (g *Game) initRendering() error {
 	g.wireframe, err = render.NewWireframeRenderer()
 	if err != nil {
 		return fmt.Errorf("failed to create wireframe renderer: %w", err)
+	}
+
+	// Clouds
+	g.clouds, err = render.NewClouds()
+	if err != nil {
+		return fmt.Errorf("failed to create cloud renderer: %w", err)
 	}
 
 	// UI
@@ -234,8 +242,9 @@ func (g *Game) processInput() {
 }
 
 func (g *Game) update() {
-	// Update sky
+	// Update sky and clouds
 	g.sky.Update(g.deltaTime)
+	g.clouds.Update(g.deltaTime)
 
 	// Update player
 	g.player.Update(g.deltaTime, g.world, g.input)
@@ -266,27 +275,21 @@ func (g *Game) update() {
 
 	if g.input.RightClick && g.lookingAtBlock {
 		if currentTime-g.lastPlace > 0.2 {
-			// Calculate placement position based on face
+			// Calculate placement position based on hit face
 			placePos := g.targetBlock
 			switch g.targetFace {
-			case 0: // X axis
-				if g.player.GetForward()[0] > 0 {
-					placePos.X--
-				} else {
-					placePos.X++
-				}
-			case 1: // Y axis
-				if g.player.GetForward()[1] > 0 {
-					placePos.Y--
-				} else {
-					placePos.Y++
-				}
-			case 2: // Z axis
-				if g.player.GetForward()[2] > 0 {
-					placePos.Z--
-				} else {
-					placePos.Z++
-				}
+			case 0: // Top (Y+)
+				placePos.Y++
+			case 1: // Bottom (Y-)
+				placePos.Y--
+			case 2: // North (Z-)
+				placePos.Z--
+			case 3: // South (Z+)
+				placePos.Z++
+			case 4: // East (X+)
+				placePos.X++
+			case 5: // West (X-)
+				placePos.X--
 			}
 
 			// Check if placement position doesn't intersect player
@@ -346,6 +349,10 @@ func (g *Game) render() {
 	// Frustum culling
 	frustum := utils.ExtractFrustum(vp)
 	g.world.Render(frustum)
+
+	// Render clouds
+	g.clouds.Render(view, projection, g.player.GetEyePosition(), fogColor,
+		float32(g.world.RenderDist)*world.ChunkSize, g.sky.GetDayNightFactor())
 
 	// Render block selection wireframe
 	if g.lookingAtBlock {
@@ -481,6 +488,7 @@ func (g *Game) Cleanup() {
 	g.blockShader.Delete()
 	g.blockAtlas.Delete()
 	g.sky.Cleanup()
+	g.clouds.Cleanup()
 	g.wireframe.Cleanup()
 	g.ui.Cleanup()
 	glfw.Terminate()

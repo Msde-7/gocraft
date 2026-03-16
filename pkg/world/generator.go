@@ -136,27 +136,50 @@ func (g *WorldGenerator) getBlock(x, y, z, height int, biome float64, worldX, wo
 		return BlockAir
 	}
 
+	// Determine biome type for surface blocks
+	biomeType := g.GetBiome(worldX, worldZ)
+
 	// Surface layer
 	if y == height {
-		if y < g.SeaLevel+2 {
+		switch biomeType {
+		case BiomeOcean:
 			return BlockSand
-		}
-		if biome > 0.5 {
-			// Snow biome
+		case BiomeDesert:
+			return BlockSand
+		case BiomeSnow:
 			return BlockSnow
+		case BiomeMountain:
+			if y > g.BaseHeight+35 {
+				return BlockSnow
+			}
+			return BlockStone
+		default:
+			if y < g.SeaLevel+2 {
+				return BlockSand
+			}
+			return BlockGrass
 		}
-		return BlockGrass
 	}
 
-	// Sub-surface
+	// Sub-surface layers
 	if y > height-4 {
-		if y < g.SeaLevel+2 {
+		switch biomeType {
+		case BiomeDesert, BiomeOcean:
 			return BlockSand
+		case BiomeMountain:
+			if y > height-2 {
+				return BlockGravel
+			}
+			return BlockStone
+		default:
+			if y < g.SeaLevel+2 {
+				return BlockSand
+			}
+			return BlockDirt
 		}
-		return BlockDirt
 	}
 
-	// Stone
+	// Deep stone
 	return BlockStone
 }
 
@@ -242,16 +265,34 @@ func (g *WorldGenerator) generateTrees(chunk *Chunk, heightMap [][]int, biomeMap
 	for x := 2; x < ChunkSize-2; x++ {
 		for z := 2; z < ChunkSize-2; z++ {
 			height := heightMap[x][z]
-			biome := biomeMap[x][z]
 
-			// Don't place trees in water or snow biomes
-			if height < g.SeaLevel || biome > 0.5 {
+			// Don't place trees underwater
+			if height < g.SeaLevel {
 				continue
 			}
 
-			// Random chance for tree
-			if rng.Float64() < 0.02 {
-				g.placeTree(chunk, x, height+1, z, rng)
+			worldX := float64(chunk.X*ChunkSize + x)
+			worldZ := float64(chunk.Z*ChunkSize + z)
+			biomeType := g.GetBiome(worldX, worldZ)
+
+			var treeChance float64
+			switch biomeType {
+			case BiomeForest:
+				treeChance = 0.06 // Dense forest
+			case BiomePlains:
+				treeChance = 0.015 // Sparse trees
+			case BiomeDesert:
+				treeChance = 0.005 // Rare cactus-like
+			default:
+				continue // No trees in snow, mountain, ocean
+			}
+
+			if rng.Float64() < treeChance {
+				if biomeType == BiomeDesert {
+					g.placeCactus(chunk, x, height+1, z, rng)
+				} else {
+					g.placeTree(chunk, x, height+1, z, rng)
+				}
 			}
 		}
 	}
@@ -296,6 +337,17 @@ func (g *WorldGenerator) placeTree(chunk *Chunk, x, y, z int, rng *rand.Rand) {
 				}
 			}
 		}
+	}
+}
+
+// placeCactus places a cactus (sand pillar) at the given position
+func (g *WorldGenerator) placeCactus(chunk *Chunk, x, y, z int, rng *rand.Rand) {
+	height := 2 + rng.Intn(2) // 2-3 blocks tall
+	if y+height >= ChunkHeight {
+		return
+	}
+	for dy := 0; dy < height; dy++ {
+		chunk.Blocks[x][y+dy][z] = BlockSand
 	}
 }
 

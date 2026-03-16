@@ -149,6 +149,18 @@ func (c *Chunk) BuildMesh(getNeighborBlock func(x, y, z int) BlockType) {
 	indices := make([]uint32, 0, 30000)
 	var indexOffset uint32 = 0
 
+	// World-coordinate block lookup for cross-chunk boundaries and AO
+	worldGetBlock := func(wx, wy, wz int) BlockType {
+		// Check if within this chunk (fast path, no lock needed since we hold it)
+		lx := wx - c.X*ChunkSize
+		lz := wz - c.Z*ChunkSize
+		if lx >= 0 && lx < ChunkSize && lz >= 0 && lz < ChunkSize && wy >= 0 && wy < ChunkHeight {
+			return c.Blocks[lx][wy][lz]
+		}
+		// Cross-chunk: use the provided neighbor lookup
+		return getNeighborBlock(wx, wy, wz)
+	}
+
 	for x := 0; x < ChunkSize; x++ {
 		for y := 0; y < 128; y++ { // Up to 128 height
 			for z := 0; z < ChunkSize; z++ {
@@ -158,36 +170,28 @@ func (c *Chunk) BuildMesh(getNeighborBlock func(x, y, z int) BlockType) {
 				}
 
 				blockInfo := BlockInfos[block]
+				worldX := c.X*ChunkSize + x
+				worldZ := c.Z*ChunkSize + z
 
-				// Check each face - local only to avoid deadlock
+				// Check each face using world coordinates for cross-chunk accuracy
 				for face := 0; face < 6; face++ {
-					var neighbor BlockType = BlockAir
+					var neighbor BlockType
 
 					switch face {
 					case 0: // Top
-						if y+1 < ChunkHeight {
-							neighbor = c.Blocks[x][y+1][z]
-						}
+						neighbor = worldGetBlock(worldX, y+1, worldZ)
 					case 1: // Bottom
 						if y > 0 {
 							neighbor = c.Blocks[x][y-1][z]
 						}
 					case 2: // North (Z-)
-						if z > 0 {
-							neighbor = c.Blocks[x][y][z-1]
-						}
+						neighbor = worldGetBlock(worldX, y, worldZ-1)
 					case 3: // South (Z+)
-						if z < ChunkSize-1 {
-							neighbor = c.Blocks[x][y][z+1]
-						}
+						neighbor = worldGetBlock(worldX, y, worldZ+1)
 					case 4: // East (X+)
-						if x < ChunkSize-1 {
-							neighbor = c.Blocks[x+1][y][z]
-						}
+						neighbor = worldGetBlock(worldX+1, y, worldZ)
 					case 5: // West (X-)
-						if x > 0 {
-							neighbor = c.Blocks[x-1][y][z]
-						}
+						neighbor = worldGetBlock(worldX-1, y, worldZ)
 					}
 
 					// Skip if neighbor is solid and opaque
@@ -209,22 +213,25 @@ func (c *Chunk) BuildMesh(getNeighborBlock func(x, y, z int) BlockType) {
 					texCoords := GetTexCoords(texIndex)
 					normal := faceNormals[face]
 
-					// World position for this block
-					worldX := float32(c.X*ChunkSize + x)
-					worldZ := float32(c.Z*ChunkSize + z)
+					// World position for this block (float)
+					fWorldX := float32(worldX)
+					fWorldZ := float32(worldZ)
 
-					// Add vertices for this face (no AO for speed)
+					// Add vertices for this face with AO
 					for i := 0; i < 4; i++ {
 						pos := faceVertices[face][i]
 
+						// Calculate ambient occlusion
+						ao := calculateAO(x, y, z, face, i, worldGetBlock, worldX, worldZ)
+
 						// Position (3 floats) - use WORLD coordinates
-						vertices = append(vertices, pos[0]+worldX, pos[1]+float32(y), pos[2]+worldZ)
+						vertices = append(vertices, pos[0]+fWorldX, pos[1]+float32(y), pos[2]+fWorldZ)
 						// TexCoord (2 floats)
 						vertices = append(vertices, texCoords[i][0], texCoords[i][1])
 						// Normal (3 floats)
 						vertices = append(vertices, normal[0], normal[1], normal[2])
-						// AO (1 float) - disabled for speed
-						vertices = append(vertices, 1.0)
+						// AO (1 float)
+						vertices = append(vertices, ao)
 						// Light (1 float)
 						vertices = append(vertices, 1.0)
 					}
@@ -288,56 +295,128 @@ func (c *Chunk) BuildMesh(getNeighborBlock func(x, y, z int) BlockType) {
 	c.MeshBuilt = true
 }
 
-// calculateAO calculates ambient occlusion for a vertex
+// calculateAO calculates ambient occlusion for a vertex on any face
 func calculateAO(x, y, z, face, vertex int, getBlock func(x, y, z int) BlockType, worldX, worldZ int) float32 {
-	// Simplified AO calculation
 	side1, side2, corner := false, false, false
 
-	// Get the three neighbors that affect this vertex's AO
 	switch face {
-	case FaceTop:
+	case FaceTop: // Y+
 		switch vertex {
-		case 0:
+		case 0: // (0,1,0)
 			side1 = getBlock(worldX-1, y+1, worldZ).IsSolid()
 			side2 = getBlock(worldX, y+1, worldZ-1).IsSolid()
 			corner = getBlock(worldX-1, y+1, worldZ-1).IsSolid()
-		case 1:
+		case 1: // (1,1,0)
 			side1 = getBlock(worldX+1, y+1, worldZ).IsSolid()
 			side2 = getBlock(worldX, y+1, worldZ-1).IsSolid()
 			corner = getBlock(worldX+1, y+1, worldZ-1).IsSolid()
-		case 2:
+		case 2: // (1,1,1)
 			side1 = getBlock(worldX+1, y+1, worldZ).IsSolid()
 			side2 = getBlock(worldX, y+1, worldZ+1).IsSolid()
 			corner = getBlock(worldX+1, y+1, worldZ+1).IsSolid()
-		case 3:
+		case 3: // (0,1,1)
 			side1 = getBlock(worldX-1, y+1, worldZ).IsSolid()
 			side2 = getBlock(worldX, y+1, worldZ+1).IsSolid()
 			corner = getBlock(worldX-1, y+1, worldZ+1).IsSolid()
 		}
-	case FaceBottom:
+	case FaceBottom: // Y-
 		switch vertex {
-		case 0:
+		case 0: // (0,0,1)
 			side1 = getBlock(worldX-1, y-1, worldZ).IsSolid()
 			side2 = getBlock(worldX, y-1, worldZ+1).IsSolid()
 			corner = getBlock(worldX-1, y-1, worldZ+1).IsSolid()
-		case 1:
+		case 1: // (1,0,1)
 			side1 = getBlock(worldX+1, y-1, worldZ).IsSolid()
 			side2 = getBlock(worldX, y-1, worldZ+1).IsSolid()
 			corner = getBlock(worldX+1, y-1, worldZ+1).IsSolid()
-		case 2:
+		case 2: // (1,0,0)
 			side1 = getBlock(worldX+1, y-1, worldZ).IsSolid()
 			side2 = getBlock(worldX, y-1, worldZ-1).IsSolid()
 			corner = getBlock(worldX+1, y-1, worldZ-1).IsSolid()
-		case 3:
+		case 3: // (0,0,0)
 			side1 = getBlock(worldX-1, y-1, worldZ).IsSolid()
 			side2 = getBlock(worldX, y-1, worldZ-1).IsSolid()
 			corner = getBlock(worldX-1, y-1, worldZ-1).IsSolid()
 		}
-	default:
-		return 1.0 // Simplified: no AO for side faces
+	case FaceNorth: // Z-
+		switch vertex {
+		case 0: // (1,0,0)
+			side1 = getBlock(worldX+1, y, worldZ-1).IsSolid()
+			side2 = getBlock(worldX, y-1, worldZ-1).IsSolid()
+			corner = getBlock(worldX+1, y-1, worldZ-1).IsSolid()
+		case 1: // (0,0,0)
+			side1 = getBlock(worldX-1, y, worldZ-1).IsSolid()
+			side2 = getBlock(worldX, y-1, worldZ-1).IsSolid()
+			corner = getBlock(worldX-1, y-1, worldZ-1).IsSolid()
+		case 2: // (0,1,0)
+			side1 = getBlock(worldX-1, y, worldZ-1).IsSolid()
+			side2 = getBlock(worldX, y+1, worldZ-1).IsSolid()
+			corner = getBlock(worldX-1, y+1, worldZ-1).IsSolid()
+		case 3: // (1,1,0)
+			side1 = getBlock(worldX+1, y, worldZ-1).IsSolid()
+			side2 = getBlock(worldX, y+1, worldZ-1).IsSolid()
+			corner = getBlock(worldX+1, y+1, worldZ-1).IsSolid()
+		}
+	case FaceSouth: // Z+
+		switch vertex {
+		case 0: // (0,0,1)
+			side1 = getBlock(worldX-1, y, worldZ+1).IsSolid()
+			side2 = getBlock(worldX, y-1, worldZ+1).IsSolid()
+			corner = getBlock(worldX-1, y-1, worldZ+1).IsSolid()
+		case 1: // (1,0,1)
+			side1 = getBlock(worldX+1, y, worldZ+1).IsSolid()
+			side2 = getBlock(worldX, y-1, worldZ+1).IsSolid()
+			corner = getBlock(worldX+1, y-1, worldZ+1).IsSolid()
+		case 2: // (1,1,1)
+			side1 = getBlock(worldX+1, y, worldZ+1).IsSolid()
+			side2 = getBlock(worldX, y+1, worldZ+1).IsSolid()
+			corner = getBlock(worldX+1, y+1, worldZ+1).IsSolid()
+		case 3: // (0,1,1)
+			side1 = getBlock(worldX-1, y, worldZ+1).IsSolid()
+			side2 = getBlock(worldX, y+1, worldZ+1).IsSolid()
+			corner = getBlock(worldX-1, y+1, worldZ+1).IsSolid()
+		}
+	case FaceEast: // X+
+		switch vertex {
+		case 0: // (1,0,1)
+			side1 = getBlock(worldX+1, y, worldZ+1).IsSolid()
+			side2 = getBlock(worldX+1, y-1, worldZ).IsSolid()
+			corner = getBlock(worldX+1, y-1, worldZ+1).IsSolid()
+		case 1: // (1,0,0)
+			side1 = getBlock(worldX+1, y, worldZ-1).IsSolid()
+			side2 = getBlock(worldX+1, y-1, worldZ).IsSolid()
+			corner = getBlock(worldX+1, y-1, worldZ-1).IsSolid()
+		case 2: // (1,1,0)
+			side1 = getBlock(worldX+1, y, worldZ-1).IsSolid()
+			side2 = getBlock(worldX+1, y+1, worldZ).IsSolid()
+			corner = getBlock(worldX+1, y+1, worldZ-1).IsSolid()
+		case 3: // (1,1,1)
+			side1 = getBlock(worldX+1, y, worldZ+1).IsSolid()
+			side2 = getBlock(worldX+1, y+1, worldZ).IsSolid()
+			corner = getBlock(worldX+1, y+1, worldZ+1).IsSolid()
+		}
+	case FaceWest: // X-
+		switch vertex {
+		case 0: // (0,0,0)
+			side1 = getBlock(worldX-1, y, worldZ-1).IsSolid()
+			side2 = getBlock(worldX-1, y-1, worldZ).IsSolid()
+			corner = getBlock(worldX-1, y-1, worldZ-1).IsSolid()
+		case 1: // (0,0,1)
+			side1 = getBlock(worldX-1, y, worldZ+1).IsSolid()
+			side2 = getBlock(worldX-1, y-1, worldZ).IsSolid()
+			corner = getBlock(worldX-1, y-1, worldZ+1).IsSolid()
+		case 2: // (0,1,1)
+			side1 = getBlock(worldX-1, y, worldZ+1).IsSolid()
+			side2 = getBlock(worldX-1, y+1, worldZ).IsSolid()
+			corner = getBlock(worldX-1, y+1, worldZ+1).IsSolid()
+		case 3: // (0,1,0)
+			side1 = getBlock(worldX-1, y, worldZ-1).IsSolid()
+			side2 = getBlock(worldX-1, y+1, worldZ).IsSolid()
+			corner = getBlock(worldX-1, y+1, worldZ-1).IsSolid()
+		}
 	}
 
-	// Calculate AO value
+	// Calculate AO value (0=fully occluded, 3=fully lit)
 	ao := 0
 	if side1 {
 		ao++
@@ -352,7 +431,7 @@ func calculateAO(x, y, z, face, vertex int, getBlock func(x, y, z int) BlockType
 		ao = 3
 	}
 
-	aoValues := []float32{1.0, 0.8, 0.6, 0.4}
+	aoValues := []float32{1.0, 0.75, 0.55, 0.35}
 	return aoValues[ao]
 }
 
