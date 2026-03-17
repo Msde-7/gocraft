@@ -19,11 +19,16 @@ type Chunk struct {
 	X, Z   int
 	Blocks [ChunkSize][ChunkHeight][ChunkSize]BlockType
 
-	// Mesh data
+	// Solid mesh data
 	VAO, VBO, EBO uint32
 	IndexCount    int32
-	MeshDirty     bool
-	MeshBuilt     bool
+
+	// Transparent mesh data (water, glass, etc.)
+	TransVAO, TransVBO, TransEBO uint32
+	TransIndexCount              int32
+
+	MeshDirty bool
+	MeshBuilt bool
 
 	// Threading
 	mutex sync.RWMutex
@@ -102,10 +107,10 @@ var faceNormals = []mgl32.Vec3{
 }
 
 var faceVertices = [6][4]mgl32.Vec3{
-	// Top face (Y+)
-	{{0, 1, 0}, {1, 1, 0}, {1, 1, 1}, {0, 1, 1}},
-	// Bottom face (Y-)
-	{{0, 0, 1}, {1, 0, 1}, {1, 0, 0}, {0, 0, 0}},
+	// Top face (Y+) - CCW when viewed from above
+	{{0, 1, 1}, {1, 1, 1}, {1, 1, 0}, {0, 1, 0}},
+	// Bottom face (Y-) - CCW when viewed from below
+	{{0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {0, 0, 1}},
 	// North face (Z-)
 	{{1, 0, 0}, {0, 0, 0}, {0, 1, 0}, {1, 1, 0}},
 	// South face (Z+)
@@ -128,8 +133,8 @@ func GetTexCoords(texIndex int) [4]mgl32.Vec2 {
 	tx := float32(texIndex % AtlasSize)
 	ty := float32(texIndex / AtlasSize)
 
-	// Small offset to prevent texture bleeding
-	offset := float32(0.001)
+	// Offset to prevent texture bleeding at distance with mipmaps
+	offset := float32(0.002)
 
 	return [4]mgl32.Vec2{
 		{tx*TexCoordSize + offset, (ty+1)*TexCoordSize - offset},
@@ -139,30 +144,32 @@ func GetTexCoords(texIndex int) [4]mgl32.Vec2 {
 	}
 }
 
-// BuildMesh generates the mesh for the chunk
+// BuildMesh generates the mesh for the chunk, splitting solid and transparent geometry
 func (c *Chunk) BuildMesh(getNeighborBlock func(x, y, z int) BlockType) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	// Pre-allocate slices for better performance
-	vertices := make([]float32, 0, 50000)
-	indices := make([]uint32, 0, 30000)
-	var indexOffset uint32 = 0
+	// Separate buffers for solid and transparent blocks
+	solidVerts := make([]float32, 0, 50000)
+	solidIdx := make([]uint32, 0, 30000)
+	var solidOff uint32
+
+	transVerts := make([]float32, 0, 10000)
+	transIdx := make([]uint32, 0, 6000)
+	var transOff uint32
 
 	// World-coordinate block lookup for cross-chunk boundaries and AO
 	worldGetBlock := func(wx, wy, wz int) BlockType {
-		// Check if within this chunk (fast path, no lock needed since we hold it)
 		lx := wx - c.X*ChunkSize
 		lz := wz - c.Z*ChunkSize
 		if lx >= 0 && lx < ChunkSize && lz >= 0 && lz < ChunkSize && wy >= 0 && wy < ChunkHeight {
 			return c.Blocks[lx][wy][lz]
 		}
-		// Cross-chunk: use the provided neighbor lookup
 		return getNeighborBlock(wx, wy, wz)
 	}
 
 	for x := 0; x < ChunkSize; x++ {
-		for y := 0; y < 128; y++ { // Up to 128 height
+		for y := 0; y < 128; y++ {
 			for z := 0; z < ChunkSize; z++ {
 				block := c.Blocks[x][y][z]
 				if block == BlockAir {
@@ -170,36 +177,59 @@ func (c *Chunk) BuildMesh(getNeighborBlock func(x, y, z int) BlockType) {
 				}
 
 				blockInfo := BlockInfos[block]
+				isTransparent := blockInfo.Transparent
 				worldX := c.X*ChunkSize + x
 				worldZ := c.Z*ChunkSize + z
 
-				// Check each face using world coordinates for cross-chunk accuracy
 				for face := 0; face < 6; face++ {
 					var neighbor BlockType
 
 					switch face {
-					case 0: // Top
+					case 0:
 						neighbor = worldGetBlock(worldX, y+1, worldZ)
-					case 1: // Bottom
+					case 1:
 						if y > 0 {
 							neighbor = c.Blocks[x][y-1][z]
 						}
-					case 2: // North (Z-)
+					case 2:
 						neighbor = worldGetBlock(worldX, y, worldZ-1)
-					case 3: // South (Z+)
+					case 3:
 						neighbor = worldGetBlock(worldX, y, worldZ+1)
-					case 4: // East (X+)
+					case 4:
 						neighbor = worldGetBlock(worldX+1, y, worldZ)
-					case 5: // West (X-)
+					case 5:
 						neighbor = worldGetBlock(worldX-1, y, worldZ)
 					}
 
-					// Skip if neighbor is solid and opaque
-					if neighbor.IsSolid() && !neighbor.IsTransparent() {
-						continue
+					// Determine if this face should be rendered
+					if block == BlockWater {
+						// Water: only render top face (surface) and edges next to non-water solid
+						if neighbor == BlockWater {
+							continue
+						}
+						if face == FaceTop && neighbor == BlockAir {
+							// Water surface - render
+						} else if face != FaceTop && neighbor == BlockAir {
+							// Underwater side/bottom exposed to air (underwater caves) - skip
+							continue
+						} else if neighbor.IsSolid() && !neighbor.IsTransparent() {
+							continue
+						}
+					} else if isTransparent {
+						// Transparent blocks (glass, leaves): skip same-type neighbors
+						if neighbor == block {
+							continue
+						}
+						if neighbor.IsSolid() && !neighbor.IsTransparent() {
+							continue
+						}
+					} else {
+						// Solid blocks: skip if neighbor is solid and opaque
+						if neighbor.IsSolid() && !neighbor.IsTransparent() {
+							continue
+						}
 					}
 
-					// Get texture index for this face
 					var texIndex int
 					switch face {
 					case FaceTop:
@@ -212,87 +242,92 @@ func (c *Chunk) BuildMesh(getNeighborBlock func(x, y, z int) BlockType) {
 
 					texCoords := GetTexCoords(texIndex)
 					normal := faceNormals[face]
-
-					// World position for this block (float)
 					fWorldX := float32(worldX)
 					fWorldZ := float32(worldZ)
 
-					// Add vertices for this face with AO
-					for i := 0; i < 4; i++ {
-						pos := faceVertices[face][i]
-
-						// Calculate ambient occlusion
-						ao := calculateAO(x, y, z, face, i, worldGetBlock, worldX, worldZ)
-
-						// Position (3 floats) - use WORLD coordinates
-						vertices = append(vertices, pos[0]+fWorldX, pos[1]+float32(y), pos[2]+fWorldZ)
-						// TexCoord (2 floats)
-						vertices = append(vertices, texCoords[i][0], texCoords[i][1])
-						// Normal (3 floats)
-						vertices = append(vertices, normal[0], normal[1], normal[2])
-						// AO (1 float)
-						vertices = append(vertices, ao)
-						// Light (1 float)
-						vertices = append(vertices, 1.0)
+					// Choose which buffer to append to
+					verts := &solidVerts
+					idx := &solidIdx
+					off := &solidOff
+					if isTransparent {
+						verts = &transVerts
+						idx = &transIdx
+						off = &transOff
 					}
 
-					// Add indices
-					indices = append(indices,
-						indexOffset+0, indexOffset+1, indexOffset+2,
-						indexOffset+2, indexOffset+3, indexOffset+0)
-					indexOffset += 4
+					for i := 0; i < 4; i++ {
+						pos := faceVertices[face][i]
+						ao := float32(1.0)
+						if !isTransparent {
+							ao = calculateAO(x, y, z, face, i, worldGetBlock, worldX, worldZ)
+						}
+						*verts = append(*verts, pos[0]+fWorldX, pos[1]+float32(y), pos[2]+fWorldZ)
+						*verts = append(*verts, texCoords[i][0], texCoords[i][1])
+						*verts = append(*verts, normal[0], normal[1], normal[2])
+						*verts = append(*verts, ao)
+						*verts = append(*verts, 1.0)
+					}
+
+					*idx = append(*idx, *off+0, *off+1, *off+2, *off+2, *off+3, *off+0)
+					*off += 4
 				}
 			}
 		}
 	}
 
-	// Upload to GPU
+	// Upload solid mesh
 	if c.VAO == 0 {
 		gl.GenVertexArrays(1, &c.VAO)
 		gl.GenBuffers(1, &c.VBO)
 		gl.GenBuffers(1, &c.EBO)
 	}
+	uploadMesh(c.VAO, c.VBO, c.EBO, solidVerts, solidIdx)
+	c.IndexCount = int32(len(solidIdx))
 
-	gl.BindVertexArray(c.VAO)
+	// Upload transparent mesh
+	if c.TransVAO == 0 {
+		gl.GenVertexArrays(1, &c.TransVAO)
+		gl.GenBuffers(1, &c.TransVBO)
+		gl.GenBuffers(1, &c.TransEBO)
+	}
+	uploadMesh(c.TransVAO, c.TransVBO, c.TransEBO, transVerts, transIdx)
+	c.TransIndexCount = int32(len(transIdx))
 
-	gl.BindBuffer(gl.ARRAY_BUFFER, c.VBO)
+	c.MeshDirty = false
+	c.MeshBuilt = true
+}
+
+// uploadMesh uploads vertex/index data to a VAO
+func uploadMesh(vao, vbo, ebo uint32, vertices []float32, indices []uint32) {
+	gl.BindVertexArray(vao)
+
+	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
 	if len(vertices) > 0 {
 		gl.BufferData(gl.ARRAY_BUFFER, len(vertices)*4, gl.Ptr(vertices), gl.STATIC_DRAW)
+	} else {
+		gl.BufferData(gl.ARRAY_BUFFER, 0, nil, gl.STATIC_DRAW)
 	}
 
-	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, c.EBO)
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo)
 	if len(indices) > 0 {
 		gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(indices)*4, gl.Ptr(indices), gl.STATIC_DRAW)
+	} else {
+		gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, 0, nil, gl.STATIC_DRAW)
 	}
 
-	// Vertex attributes
-	stride := int32(10 * 4) // 10 floats per vertex
-
-	// Position
+	stride := int32(10 * 4)
 	gl.VertexAttribPointerWithOffset(0, 3, gl.FLOAT, false, stride, 0)
 	gl.EnableVertexAttribArray(0)
-
-	// TexCoord
 	gl.VertexAttribPointerWithOffset(1, 2, gl.FLOAT, false, stride, 3*4)
 	gl.EnableVertexAttribArray(1)
-
-	// Normal
 	gl.VertexAttribPointerWithOffset(2, 3, gl.FLOAT, false, stride, 5*4)
 	gl.EnableVertexAttribArray(2)
-
-	// AO
 	gl.VertexAttribPointerWithOffset(3, 1, gl.FLOAT, false, stride, 8*4)
 	gl.EnableVertexAttribArray(3)
-
-	// Light
 	gl.VertexAttribPointerWithOffset(4, 1, gl.FLOAT, false, stride, 9*4)
 	gl.EnableVertexAttribArray(4)
 
 	gl.BindVertexArray(0)
-
-	c.IndexCount = int32(len(indices))
-	c.MeshDirty = false
-	c.MeshBuilt = true
 }
 
 // calculateAO calculates ambient occlusion for a vertex on any face
@@ -300,43 +335,43 @@ func calculateAO(x, y, z, face, vertex int, getBlock func(x, y, z int) BlockType
 	side1, side2, corner := false, false, false
 
 	switch face {
-	case FaceTop: // Y+
+	case FaceTop: // Y+ — vertices: (0,1,1), (1,1,1), (1,1,0), (0,1,0)
 		switch vertex {
-		case 0: // (0,1,0)
-			side1 = getBlock(worldX-1, y+1, worldZ).IsSolid()
-			side2 = getBlock(worldX, y+1, worldZ-1).IsSolid()
-			corner = getBlock(worldX-1, y+1, worldZ-1).IsSolid()
-		case 1: // (1,1,0)
-			side1 = getBlock(worldX+1, y+1, worldZ).IsSolid()
-			side2 = getBlock(worldX, y+1, worldZ-1).IsSolid()
-			corner = getBlock(worldX+1, y+1, worldZ-1).IsSolid()
-		case 2: // (1,1,1)
-			side1 = getBlock(worldX+1, y+1, worldZ).IsSolid()
-			side2 = getBlock(worldX, y+1, worldZ+1).IsSolid()
-			corner = getBlock(worldX+1, y+1, worldZ+1).IsSolid()
-		case 3: // (0,1,1)
+		case 0: // (0,1,1)
 			side1 = getBlock(worldX-1, y+1, worldZ).IsSolid()
 			side2 = getBlock(worldX, y+1, worldZ+1).IsSolid()
 			corner = getBlock(worldX-1, y+1, worldZ+1).IsSolid()
+		case 1: // (1,1,1)
+			side1 = getBlock(worldX+1, y+1, worldZ).IsSolid()
+			side2 = getBlock(worldX, y+1, worldZ+1).IsSolid()
+			corner = getBlock(worldX+1, y+1, worldZ+1).IsSolid()
+		case 2: // (1,1,0)
+			side1 = getBlock(worldX+1, y+1, worldZ).IsSolid()
+			side2 = getBlock(worldX, y+1, worldZ-1).IsSolid()
+			corner = getBlock(worldX+1, y+1, worldZ-1).IsSolid()
+		case 3: // (0,1,0)
+			side1 = getBlock(worldX-1, y+1, worldZ).IsSolid()
+			side2 = getBlock(worldX, y+1, worldZ-1).IsSolid()
+			corner = getBlock(worldX-1, y+1, worldZ-1).IsSolid()
 		}
-	case FaceBottom: // Y-
+	case FaceBottom: // Y- — vertices: (0,0,0), (1,0,0), (1,0,1), (0,0,1)
 		switch vertex {
-		case 0: // (0,0,1)
-			side1 = getBlock(worldX-1, y-1, worldZ).IsSolid()
-			side2 = getBlock(worldX, y-1, worldZ+1).IsSolid()
-			corner = getBlock(worldX-1, y-1, worldZ+1).IsSolid()
-		case 1: // (1,0,1)
-			side1 = getBlock(worldX+1, y-1, worldZ).IsSolid()
-			side2 = getBlock(worldX, y-1, worldZ+1).IsSolid()
-			corner = getBlock(worldX+1, y-1, worldZ+1).IsSolid()
-		case 2: // (1,0,0)
-			side1 = getBlock(worldX+1, y-1, worldZ).IsSolid()
-			side2 = getBlock(worldX, y-1, worldZ-1).IsSolid()
-			corner = getBlock(worldX+1, y-1, worldZ-1).IsSolid()
-		case 3: // (0,0,0)
+		case 0: // (0,0,0)
 			side1 = getBlock(worldX-1, y-1, worldZ).IsSolid()
 			side2 = getBlock(worldX, y-1, worldZ-1).IsSolid()
 			corner = getBlock(worldX-1, y-1, worldZ-1).IsSolid()
+		case 1: // (1,0,0)
+			side1 = getBlock(worldX+1, y-1, worldZ).IsSolid()
+			side2 = getBlock(worldX, y-1, worldZ-1).IsSolid()
+			corner = getBlock(worldX+1, y-1, worldZ-1).IsSolid()
+		case 2: // (1,0,1)
+			side1 = getBlock(worldX+1, y-1, worldZ).IsSolid()
+			side2 = getBlock(worldX, y-1, worldZ+1).IsSolid()
+			corner = getBlock(worldX+1, y-1, worldZ+1).IsSolid()
+		case 3: // (0,0,1)
+			side1 = getBlock(worldX-1, y-1, worldZ).IsSolid()
+			side2 = getBlock(worldX, y-1, worldZ+1).IsSolid()
+			corner = getBlock(worldX-1, y-1, worldZ+1).IsSolid()
 		}
 	case FaceNorth: // Z-
 		switch vertex {
@@ -435,15 +470,29 @@ func calculateAO(x, y, z, face, vertex int, getBlock func(x, y, z int) BlockType
 	return aoValues[ao]
 }
 
-// Render draws the chunk
-func (c *Chunk) Render() {
+// RenderSolid draws the solid (opaque) geometry
+func (c *Chunk) RenderSolid() {
 	if !c.MeshBuilt || c.IndexCount == 0 {
 		return
 	}
-
 	gl.BindVertexArray(c.VAO)
 	gl.DrawElements(gl.TRIANGLES, c.IndexCount, gl.UNSIGNED_INT, nil)
 	gl.BindVertexArray(0)
+}
+
+// RenderTransparent draws the transparent geometry (water, glass, etc.)
+func (c *Chunk) RenderTransparent() {
+	if !c.MeshBuilt || c.TransIndexCount == 0 {
+		return
+	}
+	gl.BindVertexArray(c.TransVAO)
+	gl.DrawElements(gl.TRIANGLES, c.TransIndexCount, gl.UNSIGNED_INT, nil)
+	gl.BindVertexArray(0)
+}
+
+// Render draws the chunk (backward compat — draws solid only)
+func (c *Chunk) Render() {
+	c.RenderSolid()
 }
 
 // Cleanup releases GPU resources
@@ -455,5 +504,13 @@ func (c *Chunk) Cleanup() {
 		c.VAO = 0
 		c.VBO = 0
 		c.EBO = 0
+	}
+	if c.TransVAO != 0 {
+		gl.DeleteVertexArrays(1, &c.TransVAO)
+		gl.DeleteBuffers(1, &c.TransVBO)
+		gl.DeleteBuffers(1, &c.TransEBO)
+		c.TransVAO = 0
+		c.TransVBO = 0
+		c.TransEBO = 0
 	}
 }

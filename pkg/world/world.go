@@ -198,23 +198,34 @@ func (w *World) BuildDirtyMeshes() {
 	}
 }
 
-// Render renders all visible chunks
+// Render renders all visible chunks (solid pass only)
 func (w *World) Render(frustum utils.Frustum) int {
 	w.ChunksMutex.RLock()
 	defer w.ChunksMutex.RUnlock()
 
 	rendered := 0
 	for _, chunk := range w.Chunks {
-		// Frustum culling
 		if !frustum.ContainsAABB(chunk.GetAABB()) {
 			continue
 		}
-
-		chunk.Render()
+		chunk.RenderSolid()
 		rendered++
 	}
 
 	return rendered
+}
+
+// RenderTransparent renders transparent geometry for all visible chunks
+func (w *World) RenderTransparent(frustum utils.Frustum) {
+	w.ChunksMutex.RLock()
+	defer w.ChunksMutex.RUnlock()
+
+	for _, chunk := range w.Chunks {
+		if !frustum.ContainsAABB(chunk.GetAABB()) {
+			continue
+		}
+		chunk.RenderTransparent()
+	}
 }
 
 // Raycast performs a DDA (Digital Differential Analyzer) raycast in the world

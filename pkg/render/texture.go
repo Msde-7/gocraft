@@ -61,10 +61,10 @@ func GenerateBlockAtlas() *Texture {
 
 	img := image.NewRGBA(image.Rect(0, 0, totalSize, totalSize))
 
-	// Fill with magenta for debugging missing textures
+	// Fill with transparent black (prevents magenta bleed through mipmaps)
 	for y := 0; y < totalSize; y++ {
 		for x := 0; x < totalSize; x++ {
-			img.Set(x, y, color.RGBA{255, 0, 255, 255})
+			img.Set(x, y, color.RGBA{0, 0, 0, 0})
 		}
 	}
 

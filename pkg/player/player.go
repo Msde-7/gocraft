@@ -354,7 +354,7 @@ type Input struct {
 // NewInput creates a new input state
 func NewInput() *Input {
 	return &Input{
-		Sensitivity: 0.15, // Good camera speed
+		Sensitivity: 0.5, // Camera sensitivity
 	}
 }
 

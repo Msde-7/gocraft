@@ -99,7 +99,6 @@ func NewGame(width, height int, seed int64) (*Game, error) {
 	gl.DepthFunc(gl.LEQUAL)
 	gl.Enable(gl.CULL_FACE)
 	gl.CullFace(gl.BACK)
-	gl.FrontFace(gl.CW) // Our mesh winding is clockwise
 	gl.Enable(gl.BLEND)
 	gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
 	gl.Enable(gl.MULTISAMPLE)
@@ -348,7 +347,14 @@ func (g *Game) render() {
 
 	// Frustum culling
 	frustum := utils.ExtractFrustum(vp)
+
+	// Pass 1: Solid geometry
 	g.world.Render(frustum)
+
+	// Pass 2: Transparent geometry (water, glass)
+	gl.Disable(gl.CULL_FACE)
+	g.world.RenderTransparent(frustum)
+	gl.Enable(gl.CULL_FACE)
 
 	// Render clouds
 	g.clouds.Render(view, projection, g.player.GetEyePosition(), fogColor,
@@ -362,8 +368,10 @@ func (g *Game) render() {
 
 	// Render UI
 	gl.Disable(gl.DEPTH_TEST)
+	gl.Disable(gl.CULL_FACE)
 	g.ui.RenderCrosshair()
 	g.ui.RenderHotbar(g.player.Inventory, g.player.SelectedSlot, g.blockAtlas)
+	gl.Enable(gl.CULL_FACE)
 }
 
 // Callbacks
