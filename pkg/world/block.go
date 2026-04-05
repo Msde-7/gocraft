@@ -46,7 +46,7 @@ var BlockInfos = [BlockCount]BlockInfo{
 	BlockStone:       {"Stone", true, false, 3, 3, 3, 0},
 	BlockCobblestone: {"Cobblestone", true, false, 4, 4, 4, 0},
 	BlockWood:        {"Wood", true, false, 5, 5, 6, 0},
-	BlockLeaves:      {"Leaves", true, true, 7, 7, 7, 0},
+	BlockLeaves:      {"Leaves", true, false, 7, 7, 7, 0},
 	BlockSand:        {"Sand", true, false, 8, 8, 8, 0},
 	BlockWater:       {"Water", false, true, 9, 9, 9, 0},
 	BlockGlass:       {"Glass", true, true, 10, 10, 10, 0},

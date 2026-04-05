@@ -353,7 +353,9 @@ func (g *Game) render() {
 
 	// Pass 2: Transparent geometry (water, glass)
 	gl.Disable(gl.CULL_FACE)
+	gl.DepthMask(false)
 	g.world.RenderTransparent(frustum)
+	gl.DepthMask(true)
 	gl.Enable(gl.CULL_FACE)
 
 	// Render clouds

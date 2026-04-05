@@ -186,9 +186,9 @@ func genLeaves(x, y int) color.RGBA {
 	n := noise(x, y, 7)
 	if n > 0.3 {
 		green := uint8(60 + n*60)
-		return color.RGBA{30, green, 20, 200}
+		return color.RGBA{30, green, 20, 255}
 	}
-	return color.RGBA{40, 120, 30, 200}
+	return color.RGBA{40, 120, 30, 255}
 }
 
 func genSand(x, y int) color.RGBA {
