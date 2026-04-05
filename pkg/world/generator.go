@@ -153,6 +153,10 @@ func (g *WorldGenerator) getBlock(x, y, z, height int, biome float64, worldX, wo
 				return BlockSnow
 			}
 			return BlockStone
+		case BiomeSwamp:
+			return BlockClay
+		case BiomeJungle:
+			return BlockGrass
 		default:
 			if y < g.SeaLevel+2 {
 				return BlockSand
@@ -171,6 +175,13 @@ func (g *WorldGenerator) getBlock(x, y, z, height int, biome float64, worldX, wo
 				return BlockGravel
 			}
 			return BlockStone
+		case BiomeSwamp:
+			if y > height-2 {
+				return BlockClay
+			}
+			return BlockDirt
+		case BiomeJungle:
+			return BlockDirt
 		default:
 			if y < g.SeaLevel+2 {
 				return BlockSand
@@ -283,14 +294,23 @@ func (g *WorldGenerator) generateTrees(chunk *Chunk, heightMap [][]int, biomeMap
 				treeChance = 0.015 // Sparse trees
 			case BiomeDesert:
 				treeChance = 0.005 // Rare cactus-like
+			case BiomeSwamp:
+				treeChance = 0.03 // Moderate swamp trees
+			case BiomeJungle:
+				treeChance = 0.09 // Very dense jungle
 			default:
 				continue // No trees in snow, mountain, ocean
 			}
 
 			if rng.Float64() < treeChance {
-				if biomeType == BiomeDesert {
+				switch biomeType {
+				case BiomeDesert:
 					g.placeCactus(chunk, x, height+1, z, rng)
-				} else {
+				case BiomeSwamp:
+					g.placeSwampTree(chunk, x, height+1, z, rng)
+				case BiomeJungle:
+					g.placeJungleTree(chunk, x, height+1, z, rng)
+				default:
 					g.placeTree(chunk, x, height+1, z, rng)
 				}
 			}
@@ -351,6 +371,84 @@ func (g *WorldGenerator) placeCactus(chunk *Chunk, x, y, z int, rng *rand.Rand) 
 	}
 }
 
+// placeSwampTree places a short, wide swamp tree
+func (g *WorldGenerator) placeSwampTree(chunk *Chunk, x, y, z int, rng *rand.Rand) {
+	trunkHeight := 3 + rng.Intn(2) // 3-4 blocks tall (short)
+
+	if y+trunkHeight+2 >= ChunkHeight {
+		return
+	}
+
+	// Place trunk
+	for dy := 0; dy < trunkHeight; dy++ {
+		if y+dy < ChunkHeight {
+			chunk.Blocks[x][y+dy][z] = BlockWood
+		}
+	}
+
+	// Wide, flat leaf canopy
+	for dy := trunkHeight - 1; dy < trunkHeight+2; dy++ {
+		radius := 3
+		if dy >= trunkHeight {
+			radius = 2
+		}
+
+		for dx := -radius; dx <= radius; dx++ {
+			for dz := -radius; dz <= radius; dz++ {
+				if dx*dx+dz*dz > radius*radius+1 {
+					continue
+				}
+				lx, ly, lz := x+dx, y+dy, z+dz
+				if lx >= 0 && lx < ChunkSize && ly >= 0 && ly < ChunkHeight && lz >= 0 && lz < ChunkSize {
+					if chunk.Blocks[lx][ly][lz] == BlockAir {
+						chunk.Blocks[lx][ly][lz] = BlockLeaves
+					}
+				}
+			}
+		}
+	}
+}
+
+// placeJungleTree places a tall jungle tree with dense foliage
+func (g *WorldGenerator) placeJungleTree(chunk *Chunk, x, y, z int, rng *rand.Rand) {
+	trunkHeight := 7 + rng.Intn(5) // 7-11 blocks tall
+
+	if y+trunkHeight+3 >= ChunkHeight {
+		return
+	}
+
+	// Place trunk
+	for dy := 0; dy < trunkHeight; dy++ {
+		if y+dy < ChunkHeight {
+			chunk.Blocks[x][y+dy][z] = BlockWood
+		}
+	}
+
+	// Dense leaf canopy at the top
+	for dy := trunkHeight - 3; dy < trunkHeight+3; dy++ {
+		radius := 3
+		if dy < trunkHeight-1 {
+			radius = 1
+		} else if dy >= trunkHeight+1 {
+			radius = 1
+		}
+
+		for dx := -radius; dx <= radius; dx++ {
+			for dz := -radius; dz <= radius; dz++ {
+				if dx*dx+dz*dz > radius*radius+1 {
+					continue
+				}
+				lx, ly, lz := x+dx, y+dy, z+dz
+				if lx >= 0 && lx < ChunkSize && ly >= 0 && ly < ChunkHeight && lz >= 0 && lz < ChunkSize {
+					if chunk.Blocks[lx][ly][lz] == BlockAir {
+						chunk.Blocks[lx][ly][lz] = BlockLeaves
+					}
+				}
+			}
+		}
+	}
+}
+
 // GenerateStructure generates special structures (future use)
 func (g *WorldGenerator) GenerateStructure(chunk *Chunk, structureType string) {
 	// Placeholder for future structure generation
@@ -386,6 +484,8 @@ const (
 	BiomeSnow
 	BiomeMountain
 	BiomeOcean
+	BiomeSwamp
+	BiomeJungle
 )
 
 // GetBiome returns the biome at a world position
@@ -404,6 +504,14 @@ func (g *WorldGenerator) GetBiome(x, z float64) BiomeType {
 	}
 	if temp < -0.3 {
 		return BiomeDesert
+	}
+	// Swamp: warm-ish low-lying areas near sea level
+	if temp > 0.2 && temp <= 0.5 && height < g.SeaLevel+4 {
+		return BiomeSwamp
+	}
+	// Jungle: hot areas (between desert and moderate) with decent elevation
+	if temp < -0.1 && temp >= -0.3 && height > g.SeaLevel {
+		return BiomeJungle
 	}
 	if math.Abs(temp) < 0.2 {
 		return BiomeForest
